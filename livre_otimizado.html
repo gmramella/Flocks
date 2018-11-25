@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body>
+<script>
+	var paused = false;
+	var eat = false;
+	var numPredators = 0;
+	var binWidth = 122;
+	var binHeight = 122;
+	var searchRadius = Math.ceil(Math.sqrt(2) * Math.max(binWidth, binHeight) / 2);//radius of a circle that fills a whole bin
+	
+	var width = 800;
+	var height = 600;
+	var fps = 1000;
+	var dt = (1/fps);
+	var windowSize = 1000;
+	var times = [];
+	var avg = 0;
+	
+	function distance(u, v) {return Math.sqrt(((v.x - u.x) * (v.x - u.x)) + ((v.y - u.y) * (v.y - u.y)));}
+	function distanceSquared(u, v) {return ((v.x - u.x) * (v.x - u.x)) + ((v.y - u.y) * (v.y - u.y));}
+	function mag(v) {return Math.sqrt(v.x * v.x + v.y * v.y);}
+	function normalize(v) {var l = Math.sqrt(v.x * v.x + v.y * v.y); if (l == 0) l = 1; return {x: v.x / l, y: v.y / l};}
+	function dotProduct(u, v) {return u.x * v.x + u.y * v.y;}
+	
+	var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+	svg.setAttribute("width", width);
+	svg.setAttribute("height", height);
+	document.body.appendChild(svg);
+	
+	var circles = document.getElementsByClassName("circle");
+	var predators = document.getElementsByClassName("predator");
+	var triangles = document.getElementsByClassName("triangle");
+	var triangleCounter = -1;
+	var flockCounter = -1;
+	
+	function createBins() {
+		var binX = Math.ceil(width / binWidth);
+		var binY = Math.ceil(height / binHeight);
+		var binsBoids = new Array(binX);
+		for (var i = 0; i < binsBoids.length; i++) {
+			binsBoids[i] = new Array(binY);
+			for (var j = 0; j < binsBoids[i].length; j++) {
+				binsBoids[i][j] = [];
+			}
+		}
+		var binsPredators = new Array(binX);
+		for (var i = 0; i < binsPredators.length; i++) {
+			binsPredators[i] = new Array(binY);
+			for (var j = 0; j < binsPredators[i].length; j++) {
+				binsPredators[i][j] = [];
+			}
+		}
+		return [binsBoids, binsPredators];
+	}
+	
+	function populateBins(binsBoids, binsPredators) {
+		for (var i = 0; i < triangles.length; i++) {
+			var x = Math.floor(Number(triangles[i].dataset.posx) / binWidth);
+			var y = Math.floor(Number(triangles[i].dataset.posy) / binHeight);
+			triangles[i].dataset.binx = x;
+			triangles[i].dataset.biny = y;
+			binsBoids[x][y].push(triangles[i]);
+		}
+		for (var i = 0; i < predators.length; i++) {
+			var predator = predators[i];
+			var pos = {x: Number(predator.getAttribute("cx")), y: Number(predator.getAttribute("cy"))};
+			var x = Math.floor(pos.x / binWidth);
+			var y = Math.floor(pos.y / binHeight);
+			predator.dataset.binx = x;
+			predator.dataset.biny = y;
+			predator.dataset.binCode = 0;
+			binsPredators[x][y].push(predator);
+			var rad = Number(predator.getAttribute("r"));
+			var l = Math.max(0, binWidth * x);
+			var r = Math.min(width, binWidth * (x + 1));
+			var t = Math.max(0, binHeight * y);
+			var b = Math.min(height, binHeight * (y + 1));
+			if (pos.x - rad < l && pos.x > rad) {
+				binsPredators[x-1][y].push(predator);
+				predator.dataset.binCode = Number(predator.dataset.binCode) + 1;
+			}
+			if (pos.x + rad >= r && pos.x < width - rad) {
+				binsPredators[x+1][y].push(predator);
+				predator.dataset.binCode = Number(predator.dataset.binCode) + 2;
+			}
+			if (pos.y - rad < t && pos.y > rad) {
+				binsPredators[x][y-1].push(predator);
+				predator.dataset.binCode = Number(predator.dataset.binCode) + 4;
+			}
+			if (pos.y + rad >= b && pos.y < height - rad) {
+				binsPredators[x][y+1].push(predator);
+				predator.dataset.binCode = Number(predator.dataset.binCode) + 8;
+			}
+		}
+	}
+	
+	function addToBin(triangle, binsBoids) {
+		var x = Math.floor(Number(triangle.dataset.posx) / binWidth);
+		var y = Math.floor(Number(triangle.dataset.posy) / binHeight);
+		triangle.dataset.binx = x;
+		triangle.dataset.biny = y;
+		binsBoids[x][y].push(triangle);
+	}
+	
+	function updateBins() {
+		for (var i = 0; i < triangles.length; i++) {
+			var triangle = triangles[i];
+			var pos = {x: Number(triangle.dataset.posx), y: Number(triangle.dataset.posy)};
+			var x = Number(triangle.dataset.binx);
+			var y = Number(triangle.dataset.biny);
+			var l = Math.max(0, binWidth * x);
+			var r = Math.min(width, binWidth * (x + 1));
+			var t = Math.max(0, binHeight * y);
+			var b = Math.min(height, binHeight * (y + 1));
+			if (pos.x < l || pos.x >= r || pos.y < t || pos.y >= b) {
+				for(var j = 0; j < binsBoids[x][y].length; j++) { 
+					if (binsBoids[x][y][j] === triangle) {
+						binsBoids[x][y].splice(j, 1); 
+					}
+				}
+				x = Math.floor(pos.x / binWidth);
+				y = Math.floor(pos.y / binHeight);
+				triangles[i].dataset.binx = x;
+				triangles[i].dataset.biny = y;
+				binsBoids[x][y].push(triangles[i]);
+			}
+		}
+		/*
+		for (var i = 0; i < predators.length; i++) {
+			var predator = predators[i];
+			var pos = {x: Number(circle.getAttribute("cx")), y: Number(circle.getAttribute("cy"))};
+			var x = Number(predator.dataset.binx);
+			var y = Number(predator.dataset.biny);
+			var l = Math.max(0, binWidth * x);
+			var r = Math.min(width, binWidth * (x + 1));
+			var t = Math.max(0, binHeight * y);
+			var b = Math.min(height, binHeight * (y + 1));
+			if (pos.x < l || pos.x >= r || pos.y < t || pos.y >= b) {
+				for(var j = 0; j < binsPredators[x][y].length; j++) { 
+					if (binsPredators[x][y][j] === predator) {
+						binsPredators[x][y].splice(j, 1); 
+					}
+				}
+				if (Number(predator.dataset.binCode) >= 8) {
+					for(var j = 0; j < binsPredators[x][y+1].length; j++) {
+						if (binsPredators[x][y+1][j] === predator) {
+							binsPredators[x][y+1].splice(j, 1); 
+						}
+					}
+					predator.dataset.binCode = Number(predator.dataset.binCode) - 8;
+				}
+				if (Number(predator.dataset.binCode) >= 4) {
+					for(var j = 0; j < binsPredators[x][y-1].length; j++) {
+						if (binsPredators[x][y-1][j] === predator) {
+							binsPredators[x][y-1].splice(j, 1); 
+						}
+					}
+					predator.dataset.binCode = Number(predator.dataset.binCode) - 4;
+				}
+				if (Number(predator.dataset.binCode) >= 2) {
+					for(var j = 0; j < binsPredators[x+1][y].length; j++) {
+						if (binsPredators[x+1][y][j] === predator) {
+							binsPredators[x+1][y].splice(j, 1); 
+						}
+					}
+					predator.dataset.binCode = Number(predator.dataset.binCode) - 2;
+				}
+				if (Number(predator.dataset.binCode) >= 1) {
+					for(var j = 0; j < binsPredators[x-1][y].length; j++) {
+						if (binsPredators[x-1][y][j] === predator) {
+							binsPredators[x-1][y].splice(j, 1); 
+						}
+					}
+					predator.dataset.binCode = Number(predator.dataset.binCode) - 1;
+				}
+				
+				x = Math.floor(pos.x / binWidth);
+				y = Math.floor(pos.y / binHeight);
+				triangles[i].dataset.binx = x;
+				triangles[i].dataset.biny = y;
+				binsBoids[x][y].push(triangles[i]);
+				l = Math.max(0, binWidth * x);
+				r = Math.min(width, binWidth * (x + 1));
+				t = Math.max(0, binHeight * y);
+				b = Math.min(height, binHeight * (y + 1));
+				if (pos.x - rad < l && pos.x > rad) {
+					binsPredators[x-1][y].push(predator);
+					predator.dataset.binCode = Number(predator.dataset.binCode) + 1;
+				}
+				if (pos.x + rad >= r && pos.x < width - rad) {
+					binsPredators[x+1][y].push(predator);
+					predator.dataset.binCode = Number(predator.dataset.binCode) + 2;
+				}
+				if (pos.y - rad < t && pos.y > rad) {
+					binsPredators[x][y-1].push(predator);
+					predator.dataset.binCode = Number(predator.dataset.binCode) + 4;
+				}
+				if (pos.y + rad >= b && pos.y < height - rad) {
+					binsPredators[x][y+1].push(predator);
+					predator.dataset.binCode = Number(predator.dataset.binCode) + 8;
+				}
+			}
+		}
+		*/
+	}
+	
+	function binLatticeSpatialSubdivisionNeighbours(triangle) {
+		var pos = {x: Number(triangle.dataset.posx), y: Number(triangle.dataset.posy)};
+		var binsBoidsInAABB = [], binsPredatorsInAABB = [];//bins inside AABB of the search circle
+		for (var i = Math.max(0, Math.floor((pos.x - searchRadius) / binWidth)); i <= Math.min(Math.ceil(width / binWidth)-1, Math.floor((pos.x + searchRadius) / binWidth)); i++) {
+			for (var j = Math.max(0, Math.floor((pos.y - searchRadius) / binHeight)); j <= Math.min(Math.ceil(height / binHeight)-1, Math.floor((pos.y + searchRadius) / binHeight)); j++) {
+				binsBoidsInAABB.push(binsBoids[i][j]);
+				binsPredatorsInAABB.push(binsPredators[i][j]);
+			}
+		}
+		var optimizedNeighbours = [], optimizedThreats = [];
+		for (var i = 0; i < binsBoidsInAABB.length; i++) {
+			for (var j = 0; j < binsBoidsInAABB[i].length; j++) {
+				if (binsBoidsInAABB[i][j] != triangle)
+					optimizedNeighbours.push(binsBoidsInAABB[i][j]);
+			}
+		}
+		for (var i = 0; i < binsPredatorsInAABB.length; i++) {
+			for (var j = 0; j < binsPredatorsInAABB[i].length; j++) {
+				optimizedThreats.push(binsPredatorsInAABB[i][j]);
+			}
+		}
+		return [optimizedNeighbours, optimizedThreats];
+	}
+	
+	function createText(id, value, position, font, size, fx, color, alpha) {
+		var text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+		text.setAttribute("id", id);
+		text.innerHTML = value;
+		text.setAttribute("x", position.x);     
+		text.setAttribute("y", position.y); 
+		text.setAttribute("font-family", font);
+		text.setAttribute("font-size", size);
+		if (fx.indexOf('b') != -1) text.setAttribute("font-weight", "bold");
+		if (fx.indexOf('i') != -1) text.setAttribute("font-style", "italic");
+		if (fx.indexOf('u') != -1) text.setAttribute("text-decoration", "underline");
+		text.setAttribute("fill", new String("rgb("+color.r+", "+color.g+", "+color.b+", "+alpha+")")); 
+		svg.appendChild(text);
+		return text;
+	}
+	
+	function updateTextValue(id, value) {
+		var text = document.getElementById(id);
+		text.innerHTML = value;
+	}
+	
+	function createCircle(id, position, r, color, alpha) {
+		var circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+		circle.setAttribute("id", id);
+		circle.setAttribute("class", "circle");
+		circle.setAttribute("cx", position.x);
+		circle.setAttribute("cy", position.y);
+		circle.setAttribute("r", r);
+		circle.setAttribute("fill", new String("rgb("+color.r+", "+color.g+", "+color.b+", "+alpha+")"));
+		circle.setAttribute("fill-opacity", alpha);
+		svg.appendChild(circle);
+		return circle;
+	}
+	
+	function createPredator(id, position, r, color, alpha) {
+		var circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+		circle.setAttribute("id", id);
+		circle.setAttribute("class", "predator");
+		circle.setAttribute("cx", position.x);
+		circle.setAttribute("cy", position.y);
+		circle.setAttribute("r", r);
+		circle.setAttribute("fill", new String("rgb("+color.r+", "+color.g+", "+color.b+", "+alpha+")"));
+		circle.setAttribute("fill-opacity", alpha);
+		svg.appendChild(circle);
+		return circle;
+	}
+
+	function updateCircle(id, position, r, color, alpha) {
+		var circle = document.getElementById(id);
+		circle.setAttribute("cx", position.x);
+		circle.setAttribute("cy", position.y);
+		circle.setAttribute("r", r);
+		circle.setAttribute("fill", new String("rgb("+color.r+", "+color.g+", "+color.b+", "+alpha+")"));
+		circle.setAttribute("fill-opacity", alpha);
+	}
+	
+	function circleCollision(p) {
+		var x = p.x;
+		var y = p.y;
+		var r = 8;
+		for (var i = 0; i < triangles.length; i++) {
+			if (Math.pow(Number(triangles[i].dataset.posx) - x, 2) + Math.pow(Number(triangles[i].dataset.posy) - y, 2) < Math.pow(Number(triangles[i].dataset.r) + r, 2))
+				return true;
+		}
+		for (var i = 0; i < circles.length; i++) {
+			if (Math.pow(Number(circles[i].getAttribute("cx")) - x, 2) + Math.pow(Number(circles[i].getAttribute("cy")) - y, 2) < Math.pow(Number(circles[i].getAttribute("r")) + r, 2))
+				return true;
+		}
+		for (var i = 0; i < predators.length; i++) {
+			if (Math.pow(Number(predators[i].getAttribute("cx")) - x, 2) + Math.pow(Number(predators[i].getAttribute("cy")) - y, 2) < Math.pow(Number(predators[i].getAttribute("r")) + r, 2))
+				return true;
+		}
+		return false;
+	}
+	
+	function createTriangle(id, vel, pos, r, color, alpha) {
+		var triangle = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+		triangle.setAttribute("id", id);
+		triangle.setAttribute("class", "triangle");
+		triangle.setAttribute("points", ""+(pos.x+r)+","+(pos.y)+" "+(pos.x-r)+","+(pos.y-(r/2))+" "+(pos.x-r)+","+(pos.y+(r/2)));
+		triangle.setAttribute("fill", new String("rgb("+color.r+", "+color.g+", "+color.b+", "+alpha+")"));
+		triangle.setAttribute("stroke", new String("rgb("+color.r+", "+color.g+", "+color.b+", "+alpha+")"));
+		triangle.setAttribute("stroke-width", 1);
+		triangle.dataset.velx = vel.x;
+		triangle.dataset.vely = vel.y;
+		triangle.dataset.posx = pos.x;
+		triangle.dataset.posy = pos.y;
+		triangle.dataset.r = r;
+		triangle.dataset.red = color.r;
+		triangle.dataset.green = color.g;
+		triangle.dataset.blue = color.b;
+		triangle.dataset.alpha = alpha;
+		triangle.dataset.isLeader = false;
+		triangle.dataset.flock = -1;
+		triangle.setAttribute("transform", "rotate("+(-Math.atan2(-vel.y, vel.x) * 180 / Math.PI)+","+(triangle.dataset.posx)+","+(triangle.dataset.posy)+")");
+		svg.appendChild(triangle);
+		return triangle;
+	}
+	
+	function updateTriangle(id, vel, pos, r, color, alpha) {
+		var triangle = document.getElementById(id);
+		triangle.setAttribute("points", ""+(pos.x+r)+","+(pos.y)+" "+(pos.x-r)+","+(pos.y-(r/2))+" "+(pos.x-r)+","+(pos.y+(r/2)));
+		triangle.setAttribute("fill", new String("rgb("+color.r+", "+color.g+", "+color.b+", "+alpha+")"));
+		triangle.setAttribute("stroke", new String("rgb("+color.r+", "+color.g+", "+color.b+", "+alpha+")"));
+		triangle.setAttribute("stroke-width", 1);
+		triangle.setAttribute("transform", "rotate("+(-Math.atan2(-vel.y, vel.x) * 180 / Math.PI)+","+(pos.x)+","+(pos.y)+")");
+	}
+	
+	function createBorder() {
+		for (var i = 0; i < width / 16; i++) {
+			createCircle("circle", {x: 8 + 16 * i, y: 8}, 8, {r: 0, g: 0, b: 0}, 1);
+			createCircle("circle", {x: 8 + 16 * i, y: height - 16}, 8, {r: 0, g: 0, b: 0}, 1);
+		}
+		for (var i = 1; i < (height / 16) - 2; i++) {
+			createCircle("circle", {x: 8, y: 8 + 16 * i}, 8, {r: 0, g: 0, b: 0}, 1);
+			createCircle("circle", {x: width - 8, y: 8 + 16 * i}, 8, {r: 0, g: 0, b: 0}, 1);
+		}
+	}
+	
+	function createPredators() {
+		for (var i = 0; i < numPredators; i++) {
+			var pos = {x: 0.1 * width + 0.8 * width * Math.random(), y: 0.1 * height + 0.8 * height * Math.random()};
+			while (circleCollision(pos))
+				pos = {x: 0.1 * width + 0.8 * width * Math.random(), y: 0.1 * height + 0.8 * height * Math.random()};;
+			createPredator("predator"+i, pos, 8, {r: 255, g: 0, b: 255}, 1);
+		}
+	}
+	
+	function createBoid(e) {
+		if ((e.pageX-8 < width - 8 && e.pageY-8 < height - 16) && !circleCollision({x: e.pageX-8, y: e.pageY-8})) {
+			var t = createTriangle("triangle"+(++triangleCounter), {x: -1 + 2 * Math.random(), y: -1 + 2 * Math.random()}, {x: e.pageX-8, y: e.pageY-8}, 8, {r: 255, g: 0, b: 0}, 1);
+			addToBin(t, binsBoids);
+			updateTextValue("alive", triangles.length+" boids "+predators.length+" predators");
+			if (flockCounter == -1) {
+				t.dataset.isLeader = true;
+				t.dataset.flock = (++flockCounter);
+				t.dataset.red = 0;
+				t.dataset.green = 0;
+				t.dataset.blue = 255;
+				t.dataset.alpha = 1;
+				createCircle("center"+t.dataset.flock, {x: Number(t.dataset.posx), y: Number(t.dataset.posy)}, 4, {r: 0, g: 255, b: 0}, 1);
+			} else {
+				var which = -1;
+				var min = Number.POSITIVE_INFINITY;
+				for (var i = 0; i < triangles.length-1; i++) {
+					var dist = distance({x: Number(triangles[i].dataset.posx), y: Number(triangles[i].dataset.posy)}, {x: Number(t.dataset.posx), y: Number(t.dataset.posy)});
+					if (min > dist) {
+						min = dist;
+						which = i;
+					}
+				}
+				/*
+				gets closest triangle
+				if close, it becomes part of the flock
+				else, it becomes the leader of a new flock
+				*/
+				if (min <= 100) {
+					t.dataset.flock = triangles[which].dataset.flock;
+					for (var i = 0; i < triangles.length; i++) {
+						if ((triangles[i].dataset.isLeader == "true") && (triangles[i].dataset.flock == t.dataset.flock) && (triangles[i] != t)) {
+							//change leadership
+							var lookAtLeaderDir = normalize({x: Number(triangles[i].dataset.posx) - Number(t.dataset.posx), y: Number(triangles[i].dataset.posy) - Number(t.dataset.posy)});
+							var leaderDir = normalize({x: Number(triangles[i].dataset.velx), y: Number(triangles[i].dataset.vely)});
+							var isAheadOfLeader = (dotProduct(lookAtLeaderDir, leaderDir) < 0);
+							if (isAheadOfLeader) {
+								triangles[i].dataset.red = 255;
+								triangles[i].dataset.green = 0;
+								triangles[i].dataset.blue = 0;
+								triangles[i].dataset.alpha = 1;
+								triangles[i].dataset.isLeader = false;
+								t.dataset.red = 0;
+								t.dataset.green = 0;
+								t.dataset.blue = 255;
+								t.dataset.alpha = 1;
+								t.dataset.isLeader = true;
+							}
+						}
+					}
+				} else {
+					t.dataset.isLeader = true;
+					t.dataset.flock = (++flockCounter);
+					t.dataset.red = 0;
+					t.dataset.green = 0;
+					t.dataset.blue = 255;
+					t.dataset.alpha = 1;
+					createCircle("center"+t.dataset.flock, {x: Number(t.dataset.posx), y: Number(t.dataset.posy)}, 4, {r: 0, g: 255, b: 0}, 1);
+				}
+			}
+		}
+	}
+	
+	function predatorEats(predator) {
+		var eaten = [];
+		var color = {r: 255, g: 0, b: 255};
+		var alpha = 1;
+		var r1 = Number(predator.getAttribute("r"));
+		for (var i = 0; i < triangles.length; i++) {
+			var r2 = Number(triangles[i].dataset.r);
+			var d = distanceSquared({x: Number(predator.getAttribute("cx")), y: Number(predator.getAttribute("cy"))}, {x: Number(triangles[i].dataset.posx), y: Number(triangles[i].dataset.posy)});
+			if (d < ((r1 * r1) + (r2 * r2))) {
+				eaten.push(triangles[i]);
+			}
+		}
+		if (eaten.length > 0)
+			color = {r: 0, g: 255, b: 255};
+		predator.setAttribute("fill", new String("rgb("+color.r+", "+color.g+", "+color.b+", "+alpha+")"));
+		return eaten;
+	}
+	
+	function avoidance(triangle, neighbours) {
+		var flock = Number(triangle.dataset.flock);
+		var sum = {x: 0, y: 0};
+		for (var i = 0; i < neighbours.length; i++) {
+			var d = distance({x: Number(triangle.dataset.posx), y: Number(triangle.dataset.posy)}, {x: Number(neighbours[i].dataset.posx), y: Number(neighbours[i].dataset.posy)});
+			if (d < 8 * 4) {
+				var diff = {x: Number(triangle.dataset.posx) - Number(neighbours[i].dataset.posx), y: Number(triangle.dataset.posy) - Number(neighbours[i].dataset.posy)};
+				diff.x /= d;
+				diff.y /= d;
+				sum.x += diff.x;
+				sum.y += diff.y;
+			}
+		}
+		return normalize(sum);
+	}
+	
+	function alignment(triangle, neighbours) {
+		var flock = Number(triangle.dataset.flock);
+		var sum = {x: 0, y: 0};
+		var count = 0;
+		for (var i = 0; i < neighbours.length; i++) {
+			if(Number(neighbours[i].dataset.flock) == flock) {
+				sum.x += Number(neighbours[i].dataset.velx);
+				sum.y += Number(neighbours[i].dataset.vely);
+				count++;
+			}
+		}
+		if (count > 0) {
+			sum.x /= count;
+			sum.y /= count;
+			var dir = {x: sum.x - Number(triangle.dataset.velx), y: sum.y - Number(triangle.dataset.vely)};
+			return normalize(dir);
+		} else {
+			return sum;
+		}
+	}
+	
+	function cohesion(triangle, neighbours) {
+		var flock = Number(triangle.dataset.flock);
+		var sum = {x: 0, y: 0};
+		var count = 0;
+		for (var i = 0; i < neighbours.length; i++) {
+			if(Number(neighbours[i].dataset.flock) == flock) {
+				sum.x += Number(neighbours[i].dataset.posx);
+				sum.y += Number(neighbours[i].dataset.posy);
+				count++;
+			}
+		}
+		if (count > 0) {
+			sum.x /= count;
+			sum.y /= count;
+			var dir = {x: sum.x - Number(triangle.dataset.posx), y: sum.y - Number(triangle.dataset.posy)};
+			return normalize(dir);
+		} else {
+			return sum;
+		}
+	}
+	
+	function flow(triangle) {
+		var direction = {x: 1, y: 1};
+		return normalize(direction);
+	}
+	
+	function tendency(triangle) {
+		var location = {x: width / 2, y: height / 2};
+		var dir = {x: location.x - Number(triangle.dataset.posx), y: location.y - Number(triangle.dataset.posy)};
+		return normalize(dir);
+	}
+	
+	function limit(triangle) {
+		var lim = 2;
+		var vel = {x: Number(triangle.dataset.velx), y: Number(triangle.dataset.vely)};
+		if (mag(vel) > lim) {
+			vel = normalize(vel);
+			vel.x *= lim;
+			vel.y *= lim;
+		}
+		triangle.dataset.velx = vel.x;
+		triangle.dataset.vely = vel.y;
+	}
+	
+	function bound(triangle) {
+		var left = 0.15 * width, right = 0.85 * width, top = 0.15 * height, bottom = 0.85 * height;
+		var v = {x: 0, y: 0};
+		if (Number(triangle.dataset.posx) < left) {
+			var d = distance({x: Number(triangle.dataset.posx), y: Number(triangle.dataset.posy)}, {x: left, y: Number(triangle.dataset.posy)});
+			v.x = d * d;
+		} else if (Number(triangle.dataset.posx) > right) {
+			var d = distance({x: Number(triangle.dataset.posx), y: Number(triangle.dataset.posy)}, {x: right, y: Number(triangle.dataset.posy)});
+			v.x = -d * d;
+		}
+		if (Number(triangle.dataset.posy) < top) {
+			var d = distance({x: Number(triangle.dataset.posx), y: Number(triangle.dataset.posy)}, {x: Number(triangle.dataset.posx), y: top});
+			v.y = d * d;
+		} else if (Number(triangle.dataset.posy) > bottom) {
+			var d = distance({x: Number(triangle.dataset.posx), y: Number(triangle.dataset.posy)}, {x: Number(triangle.dataset.posx), y: bottom});
+			v.y = -d * d;
+		}
+		return v;
+	}
+	
+	function repulse(triangle, predators) {
+		var sum = {x: 0, y: 0};
+		for (var i = 0; i < predators.length; i++) {
+			var d = distance({x: Number(triangle.dataset.posx), y: Number(triangle.dataset.posy)}, {x: Number(predators[i].getAttribute("cx")), y: Number(predators[i].getAttribute("cy"))});
+			if (d < 8 * 2) {
+				var diff = {x: Number(triangle.dataset.posx) - Number(predators[i].getAttribute("cx")), y: Number(triangle.dataset.posy) - Number(predators[i].getAttribute("cy"))};
+				diff.x /= d * d * d;
+				diff.y /= d * d * d;
+				sum.x += diff.x;
+				sum.y += diff.y;
+			}
+		}
+		return normalize(sum);
+	}
+	
+	createBorder();
+	createPredators();
+	var bins = createBins();
+	var binsBoids = bins[0];
+	var binsPredators = bins[1];
+	populateBins(binsBoids, binsPredators);
+	
+	createText("fps", 0+" ms "+0+" fps "+avg+" avg", {x: 16, y: 32}, "Verdana", 20, "b", {r: 0, g: 0, b: 0}, 1);
+	createText("alive", triangles.length+" boids "+predators.length+" predators", {x: 16, y: 52}, "Verdana", 20, "b", {r: 0, g: 0, b: 0}, 1);
+	
+	window.onmousedown = createBoid;
+	
+	var now = new Date().getTime();
+	var interval = setInterval(function() {
+		if (!paused) {
+			updateBins();
+			//update centers of the flocks
+			for (var j = 0; j <= flockCounter; j++) {
+				var xcen = 0;
+				var ycen = 0;
+				var n = 0;
+				for (var i = 0; i < triangles.length; i++) {
+					if(Number(triangles[i].dataset.flock) == j) {
+						xcen += Number(triangles[i].dataset.posx);
+						ycen += Number(triangles[i].dataset.posy);
+						n++;
+					}
+				}
+				xcen /= n;
+				ycen /= n;
+				updateCircle("center"+j, {x: xcen, y: ycen}, 4, {r: 0, g: 255, b: 0}, 1);
+			}
+			for (var i = 0; i < triangles.length; i++) {
+				var triangle = triangles[i];
+				var optimized = binLatticeSpatialSubdivisionNeighbours(triangle);
+				var neighbours = optimized[0];
+				var threats = optimized[1];
+				
+				var velAvo = avoidance(triangle, neighbours);
+				var velAli = alignment(triangle, neighbours);
+				var velCoh = cohesion(triangle, neighbours);
+				
+				var velFlo = flow(triangle);
+				var velTen = tendency(triangle);
+				var velBou = bound(triangle);
+				var velRep = repulse(triangle, predators);
+				
+				var signs = [1, 1, 1];
+				
+				var enabled = [1, 1, 1, 1];
+				
+				var weights = [75+0, 10+0, 20+0, 0, 0, 0.05+0, 70+0];
+				var sum = weights.reduce((accumulator, currentValue) => accumulator + currentValue);
+				
+				velAvo.x *= signs[0] * (weights[0] / sum);		velAvo.y *= signs[0] * (weights[0] / sum);
+				velAli.x *= signs[1] * (weights[1] / sum);		velAli.y *= signs[1] * (weights[1] / sum);
+				velCoh.x *= signs[2] * (weights[2] / sum);		velCoh.y *= signs[2] * (weights[2] / sum);
+				
+				velFlo.x *= enabled[0] * (weights[3] / sum);	velFlo.y *= enabled[0] * (weights[3] / sum);
+				velTen.x *= enabled[1] * (weights[4] / sum);	velTen.y *= enabled[1] * (weights[4] / sum);
+				velBou.x *= enabled[2] * (weights[5] / sum);	velBou.y *= enabled[2] * (weights[5] / sum);
+				velRep.x *= enabled[3] * (weights[6] / sum);	velRep.y *= enabled[3] * (weights[6] / sum);
+				
+				var threeRules = {x: velAvo.x + velAli.x + velCoh.x, y: velAvo.y + velAli.y + velCoh.y};
+				var otherRules = {x: velFlo.x + velTen.x + velBou.x + velRep.x, y: velFlo.y + velTen.y + velBou.y + velRep.y};
+				
+				triangle.dataset.velx = Number(triangle.dataset.velx) + threeRules.x + otherRules.x;
+				triangle.dataset.vely = Number(triangle.dataset.vely) + threeRules.y + otherRules.y;
+				limit(triangle);
+				triangle.dataset.posx = Number(triangle.dataset.posx) + Number(triangle.dataset.velx);
+				triangle.dataset.posy = Number(triangle.dataset.posy) + Number(triangle.dataset.vely);
+			}
+			for (var i = 0; i < triangles.length; i++) {
+				var triangle = triangles[i];
+				updateTriangle(triangle.id, {x: Number(triangle.dataset.velx), y: Number(triangle.dataset.vely)}, {x: Number(triangle.dataset.posx), y: Number(triangle.dataset.posy)}, Number(triangle.dataset.r), {r: Number(triangle.dataset.red), g: Number(triangle.dataset.green), b: Number(triangle.dataset.blue)}, Number(triangle.dataset.alpha));
+			}
+			for (var i = 0; i < predators.length; i++) {
+				var eaten = predatorEats(predators[i]);
+				if (eat && eaten.length > 0) {
+					for (var j = 0; j < eaten.length; j++) {
+						eaten[j].remove();
+					}
+					updateTextValue("alive", triangles.length+" boids "+predators.length+" predators");
+				}
+			}
+			var diff = new Date().getTime() - now;
+			times.push(1000/diff);
+			if (times.length > windowSize)
+				times.shift();
+			avg = times.reduce((accumulator, currentValue) => accumulator + currentValue) / Math.min(windowSize, times.length);
+			now = new Date().getTime();
+			updateTextValue("fps", diff+" ms "+Math.round(1000/diff)+" fps "+Math.round(avg)+" avg");
+		}
+	}, 1000 * dt);
+	
+	window.addEventListener("keydown", function(e) {
+		var evtobj = window.event? event : e;
+		if (evtobj.keyCode === 32) {//space
+			evtobj.preventDefault(); 
+			paused = !paused;
+		}
+	});
+</script>
+</body>
+</html>
