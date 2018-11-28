@@ -9,3 +9,5 @@
 ## Aceleração: regras mudam aceleração, e não a velocidade (ainda não funciona direito)
 
 ## Versões otimizadas: usam bin-lattice spatial subdivision
+
+https://docs.google.com/presentation/d/1J2GoHM7zY3GtvLHNC5LRHlMYBGh4Hizc_AMBRGP6JRU/edit?usp=sharing
